@@ -10,7 +10,7 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     && cmake --build build --parallel \
     && cp build/dpi_engine ./dpi_engine
 
-RUN pip install --no-cache-dir fastapi uvicorn python-multipart
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 10000
 CMD ["sh", "-c", "uvicorn web.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
