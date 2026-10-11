@@ -1,14 +1,14 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y g++ make && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y cmake g++ make && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY . .
 
-RUN g++ -std=c++17 -pthread -O2 -I include -o dpi_engine \
-    src/dpi_mt.cpp src/pcap_reader.cpp src/packet_parser.cpp \
-    src/sni_extractor.cpp src/types.cpp
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && cmake --build build --parallel \
+    && cp build/dpi_engine ./dpi_engine
 
 RUN pip install --no-cache-dir fastapi uvicorn python-multipart
 

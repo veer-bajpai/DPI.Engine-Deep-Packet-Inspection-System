@@ -1,4 +1,5 @@
 #include "fast_path.h"
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -47,7 +48,7 @@ void FastPathProcessor::stop() {
 }
 
 void FastPathProcessor::run() {
-    while (running_) {
+    while (running_ || !input_queue_.empty()) {
         // Get packet from input queue
         auto job_opt = input_queue_.popWithTimeout(std::chrono::milliseconds(100));
         
@@ -218,16 +219,16 @@ PacketAction FastPathProcessor::checkRules(const PacketJob& job, Connection* con
         ss << "[FP" << fp_id_ << "] BLOCKED packet: ";
         
         switch (block_reason->type) {
-            case RuleManager::BlockReason::IP:
+            case RuleManager::BlockReason::BLOCKED_IP:
                 ss << "IP " << block_reason->detail;
                 break;
-            case RuleManager::BlockReason::APP:
+            case RuleManager::BlockReason::BLOCKED_APP:
                 ss << "App " << block_reason->detail;
                 break;
-            case RuleManager::BlockReason::DOMAIN:
+            case RuleManager::BlockReason::BLOCKED_DOMAIN:
                 ss << "Domain " << block_reason->detail;
                 break;
-            case RuleManager::BlockReason::PORT:
+            case RuleManager::BlockReason::BLOCKED_PORT:
                 ss << "Port " << block_reason->detail;
                 break;
         }

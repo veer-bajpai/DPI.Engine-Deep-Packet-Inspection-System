@@ -31,6 +31,11 @@ DPIEngine::~DPIEngine() {
 }
 
 bool DPIEngine::initialize() {
+    if (config_.num_load_balancers <= 0 || config_.fps_per_lb <= 0) {
+        std::cerr << "[DPIEngine] Load balancer and fast-path counts must be positive\n";
+        return false;
+    }
+
     // Create rule manager
     rule_manager_ = std::make_unique<RuleManager>();
     
@@ -86,8 +91,6 @@ void DPIEngine::start() {
 void DPIEngine::stop() {
     if (!running_) return;
     
-    running_ = false;
-    
     // Stop LB threads first (they feed FPs)
     if (lb_manager_) {
         lb_manager_->stopAll();
@@ -97,6 +100,8 @@ void DPIEngine::stop() {
     if (fp_manager_) {
         fp_manager_->stopAll();
     }
+
+    running_ = false;
     
     // Stop output thread
     output_queue_.shutdown();
@@ -112,9 +117,6 @@ void DPIEngine::waitForCompletion() {
     if (reader_thread_.joinable()) {
         reader_thread_.join();
     }
-    
-    // Wait a bit for queues to drain
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
     // Signal completion
     processing_complete_ = true;
@@ -144,16 +146,16 @@ bool DPIEngine::processFile(const std::string& input_file,
     start();
     
     // Start reader thread
+    const auto processing_start = std::chrono::steady_clock::now();
     reader_thread_ = std::thread(&DPIEngine::readerThreadFunc, this, input_file);
     
     // Wait for completion
     waitForCompletion();
     
-    // Give some time for final packets to process
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
     // Stop all threads
     stop();
+    elapsed_seconds_ = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - processing_start).count();
     
     // Close output file
     if (output_file_.is_open()) {
@@ -163,6 +165,31 @@ bool DPIEngine::processFile(const std::string& input_file,
     // Print final report
     std::cout << generateReport();
     std::cout << fp_manager_->generateClassificationReport();
+
+    for (int fp_id = 0; fp_id < fp_manager_->getNumFPs(); ++fp_id) {
+        const auto connections = fp_manager_->getFP(fp_id).getConnectionTracker().getAllConnections();
+        for (const auto& connection : connections) {
+            const auto& tuple = connection.tuple;
+            std::string domain = connection.sni;
+            for (char& character : domain) {
+                if (character == '\t' || character == '\r' || character == '\n') {
+                    character = ' ';
+                }
+            }
+
+            std::cout << "DPI_FLOW\t"
+                      << PacketAnalyzer::PacketParser::ipToString(tuple.src_ip) << '\t'
+                      << tuple.src_port << '\t'
+                      << PacketAnalyzer::PacketParser::ipToString(tuple.dst_ip) << '\t'
+                      << tuple.dst_port << '\t'
+                      << PacketAnalyzer::PacketParser::protocolToString(tuple.protocol) << '\t'
+                      << appTypeToString(connection.app_type) << '\t'
+                      << domain << '\t'
+                      << (connection.action == PacketAction::DROP ? "DROP" : "FORWARD") << '\t'
+                      << connection.packets_in + connection.packets_out << '\t'
+                      << connection.bytes_in + connection.bytes_out << std::endl;
+        }
+    }
     
     return true;
 }
@@ -296,11 +323,20 @@ void DPIEngine::outputThreadFunc() {
 void DPIEngine::handleOutput(const PacketJob& job, PacketAction action) {
     if (action == PacketAction::DROP) {
         stats_.dropped_packets++;
-        return;
+    } else {
+        stats_.forwarded_packets++;
+        output_queue_.push(job);
     }
-    
-    stats_.forwarded_packets++;
-    output_queue_.push(job);
+
+    const uint64_t completed = completed_packets_.fetch_add(1) + 1;
+    if (completed % 250 == 0) {
+        std::lock_guard<std::mutex> lock(progress_mutex_);
+        const uint64_t latest = completed_packets_.load();
+        if (latest > last_reported_progress_) {
+            last_reported_progress_ = latest;
+            std::cout << "DPI_PROGRESS completed=" << latest << std::endl;
+        }
+    }
 }
 
 bool DPIEngine::writeOutputHeader(const PacketAnalyzer::PcapGlobalHeader& header) {
@@ -417,6 +453,14 @@ std::string DPIEngine::generateReport() const {
     ss << "║   Total Bytes:        " << std::setw(12) << stats_.total_bytes.load() << "                        ║\n";
     ss << "║   TCP Packets:        " << std::setw(12) << stats_.tcp_packets.load() << "                        ║\n";
     ss << "║   UDP Packets:        " << std::setw(12) << stats_.udp_packets.load() << "                        ║\n";
+    if (elapsed_seconds_ > 0.0) {
+        const double packets_per_second = stats_.total_packets.load() / elapsed_seconds_;
+        ss << "Benchmark: packets=" << stats_.total_packets.load()
+           << " elapsed_seconds=" << std::fixed << std::setprecision(6) << elapsed_seconds_
+           << " packets_per_second=" << std::setprecision(1) << packets_per_second
+           << " fast_path_workers="
+           << (config_.num_load_balancers * config_.fps_per_lb) << "\n";
+    }
     
     ss << "╠══════════════════════════════════════════════════════════════╣\n";
     ss << "║ FILTERING STATISTICS                                          ║\n";

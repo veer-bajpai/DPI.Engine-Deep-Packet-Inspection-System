@@ -149,6 +149,10 @@ private:
     
     // Statistics
     DPIStats stats_;
+    double elapsed_seconds_ = 0.0;
+    std::atomic<uint64_t> completed_packets_{0};
+    std::mutex progress_mutex_;
+    uint64_t last_reported_progress_ = 0;
     
     // Control
     std::atomic<bool> running_{false};

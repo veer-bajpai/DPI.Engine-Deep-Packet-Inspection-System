@@ -16,7 +16,7 @@ LoadBalancer::LoadBalancer(int lb_id,
       num_fps_(fp_queues.size()),
       input_queue_(10000),
       fp_queues_(std::move(fp_queues)),
-      per_fp_counts_(fp_queues.size()) {
+            per_fp_counts_(num_fps_) {
 }
 
 LoadBalancer::~LoadBalancer() {
@@ -47,7 +47,7 @@ void LoadBalancer::stop() {
 }
 
 void LoadBalancer::run() {
-    while (running_) {
+    while (running_ || !input_queue_.empty()) {
         // Get packet from input queue (with timeout to check running flag)
         auto job_opt = input_queue_.popWithTimeout(std::chrono::milliseconds(100));
         

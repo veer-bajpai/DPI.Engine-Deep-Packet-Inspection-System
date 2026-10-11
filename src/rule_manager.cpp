@@ -214,22 +214,22 @@ std::optional<RuleManager::BlockReason> RuleManager::shouldBlock(
     
     // Check IP first (most specific)
     if (isIPBlocked(src_ip)) {
-        return BlockReason{BlockReason::IP, ipToString(src_ip)};
+        return BlockReason{BlockReason::BLOCKED_IP, ipToString(src_ip)};
     }
     
     // Check port
     if (isPortBlocked(dst_port)) {
-        return BlockReason{BlockReason::PORT, std::to_string(dst_port)};
+        return BlockReason{BlockReason::BLOCKED_PORT, std::to_string(dst_port)};
     }
     
     // Check app
     if (isAppBlocked(app)) {
-        return BlockReason{BlockReason::APP, appTypeToString(app)};
+        return BlockReason{BlockReason::BLOCKED_APP, appTypeToString(app)};
     }
     
     // Check domain
     if (!domain.empty() && isDomainBlocked(domain)) {
-        return BlockReason{BlockReason::DOMAIN, domain};
+        return BlockReason{BlockReason::BLOCKED_DOMAIN, domain};
     }
     
     return std::nullopt;

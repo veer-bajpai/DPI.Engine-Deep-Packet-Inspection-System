@@ -1,7 +1,8 @@
 # DPI Engine - Deep Packet Inspection System
 
-
 This document explains **everything** about this project - from basic networking concepts to the complete code architecture. After reading this, you should understand exactly how packets flow through the system without needing to read the code.
+
+> **Primary technology: C++17.** Packet parsing, flow tracking, application classification, policy evaluation, and PCAP processing run in the C++ DPI engine. CMake builds the engine; Python/FastAPI provides the supporting dashboard and API.
 
 ---
 
@@ -18,20 +19,24 @@ This document explains **everything** about this project - from basic networking
 9. [How Blocking Works](#9-how-blocking-works)
 10. [Building and Running](#10-building-and-running)
 11. [Understanding the Output](#11-understanding-the-output)
+12. [Extending the Project](#12-extending-the-project)
+13. [Render Keep-Alive](#13-render-keep-alive-github-actions)
 
 ---
 
 ## 1. What is DPI?
 
-**Deep Packet Inspection (DPI)** is a technology used to examine the contents of network packets as they pass through a checkpoint. Unlike simple firewalls that only look at packet headers (source/destination IP), DPI looks *inside* the packet payload.
+**Deep Packet Inspection (DPI)** is a technology used to examine the contents of network packets as they pass through a checkpoint. Unlike simple firewalls that only look at packet headers (source/destination IP), DPI looks _inside_ the packet payload.
 
 ### Real-World Uses:
+
 - **ISPs**: Throttle or block certain applications (e.g., BitTorrent)
 - **Enterprises**: Block social media on office networks
 - **Parental Controls**: Block inappropriate websites
 - **Security**: Detect malware or intrusion attempts
 
 ### What Our DPI Engine Does:
+
 ```
 User Traffic (PCAP) → [DPI Engine] → Filtered Traffic (PCAP)
                            ↓
@@ -84,15 +89,16 @@ Every network packet is like a **Russian nesting doll** - headers wrapped inside
 
 A **connection** (or "flow") is uniquely identified by 5 values:
 
-| Field | Example | Purpose |
-|-------|---------|---------|
-| Source IP | 192.168.1.100 | Who is sending |
-| Destination IP | 172.217.14.206 | Where it's going |
-| Source Port | 54321 | Sender's application identifier |
-| Destination Port | 443 | Service being accessed (443 = HTTPS) |
-| Protocol | TCP (6) | TCP or UDP |
+| Field            | Example        | Purpose                              |
+| ---------------- | -------------- | ------------------------------------ |
+| Source IP        | 192.168.1.100  | Who is sending                       |
+| Destination IP   | 172.217.14.206 | Where it's going                     |
+| Source Port      | 54321          | Sender's application identifier      |
+| Destination Port | 443            | Service being accessed (443 = HTTPS) |
+| Protocol         | TCP (6)        | TCP or UDP                           |
 
-**Why is this important?** 
+**Why is this important?**
+
 - All packets with the same 5-tuple belong to the same connection
 - If we block one packet of a connection, we should block all of them
 - This is how we "track" conversations between computers
@@ -134,12 +140,23 @@ TLS Client Hello:
                     └─────────────┘
 ```
 
-### Two Versions
+### Primary Technology Stack
 
-| Version | File | Use Case |
-|---------|------|----------|
-| Simple (Single-threaded) | `src/main_working.cpp` | Learning, small captures |
-| Multi-threaded | `src/dpi_mt.cpp` | Production, large captures |
+| Layer                   | Technology      | Responsibility                                                                                                            |
+| ----------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| DPI engine (main stack) | C++17           | Read PCAPs, parse packets, track five-tuple flows, classify applications, apply blocking rules, and write filtered PCAPs. |
+| Build and tests         | CMake, CTest    | Build the C++ targets and run unit and scale-integration tests.                                                           |
+| Dashboard and API       | Python, FastAPI | Serve the capture UI, run the C++ engine, stream output, list flows, export PDF notes, and provide `/health`.             |
+| Keep-alive scheduler    | GitHub Actions  | Send an external health request every five minutes; the Render app does not run its own keep-alive timer.                 |
+
+### CMake Targets
+
+| Target            | Entry point                                 | Purpose                                                                             |
+| ----------------- | ------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `dpi_engine`      | `src/main_dpi.cpp`                          | Main multi-threaded C++ DPI CLI, linked with `dpi_engine_core`.                     |
+| `dpi_engine_core` | `src/dpi_engine.cpp` and supporting modules | Packet processing, load balancing, flow tracking, classification, and policy logic. |
+| `packet_analyzer` | `src/main.cpp`                              | Standalone packet inspection utility.                                               |
+| Web dashboard     | `web/main.py`                               | Supporting FastAPI interface for local capture analysis and reports.                |
 
 ---
 
@@ -187,11 +204,13 @@ reader.open("capture.pcap");
 ```
 
 **What happens:**
+
 1. Open the file in binary mode
 2. Read the 24-byte global header (magic number, version, etc.)
 3. Verify it's a valid PCAP file
 
 **PCAP File Format:**
+
 ```
 ┌────────────────────────────┐
 │ Global Header (24 bytes)   │  ← Read once at start
@@ -216,6 +235,7 @@ while (reader.readNextPacket(raw)) {
 ```
 
 **What happens:**
+
 1. Read 16-byte packet header
 2. Read N bytes of packet data (N = header.incl_len)
 3. Return false when no more packets
@@ -231,7 +251,7 @@ PacketParser::parse(raw, parsed);
 ```
 raw.data bytes:
 [0-13]   Ethernet Header
-[14-33]  IP Header  
+[14-33]  IP Header
 [34-53]  TCP Header
 [54+]    Payload
 
@@ -247,6 +267,7 @@ parsed.has_tcp  = true
 ```
 
 **Parsing the Ethernet Header (14 bytes):**
+
 ```
 Bytes 0-5:   Destination MAC
 Bytes 6-11:  Source MAC
@@ -254,6 +275,7 @@ Bytes 12-13: EtherType (0x0800 = IPv4)
 ```
 
 **Parsing the IP Header (20+ bytes):**
+
 ```
 Byte 0:      Version (4 bits) + Header Length (4 bits)
 Byte 8:      TTL (Time To Live)
@@ -263,6 +285,7 @@ Bytes 16-19: Destination IP
 ```
 
 **Parsing the TCP Header (20+ bytes):**
+
 ```
 Bytes 0-1:   Source Port
 Bytes 2-3:   Destination Port
@@ -286,6 +309,7 @@ Flow& flow = flows[tuple];  // Get or create
 ```
 
 **What happens:**
+
 - The flow table is a hash map: `FiveTuple → Flow`
 - If this 5-tuple exists, we get the existing flow
 - If not, a new flow is created
@@ -307,17 +331,20 @@ if (pkt.tuple.dst_port == 443 && pkt.payload_length > 5) {
 **What happens (in sni_extractor.cpp):**
 
 1. **Check if it's a TLS Client Hello:**
+
    ```
    Byte 0: Content Type = 0x16 (Handshake) ✓
    Byte 5: Handshake Type = 0x01 (Client Hello) ✓
    ```
 
 2. **Navigate to Extensions:**
+
    ```
    Skip: Version, Random, Session ID, Cipher Suites, Compression
    ```
 
 3. **Find SNI Extension (type 0x0000):**
+
    ```
    Extension Type: 0x0000 (SNI)
    Extension Length: N
@@ -344,6 +371,7 @@ if (rules.isBlocked(tuple.src_ip, flow.app_type, flow.sni)) {
 ```
 
 **What happens:**
+
 ```cpp
 // Check IP blacklist
 if (blocked_ips.count(src_ip)) return true;
@@ -376,6 +404,7 @@ if (flow.blocked) {
 ### Step 8: Generate Report
 
 After processing all packets:
+
 ```cpp
 // Count apps
 for (const auto& [tuple, flow] : flows) {
@@ -439,6 +468,7 @@ The multi-threaded version (`dpi_mt.cpp`) adds **parallelism** for high performa
 3. **Consistent Hashing:** Same 5-tuple always goes to same FP
 
 **Why consistent hashing matters:**
+
 ```
 Connection: 192.168.1.100:54321 → 142.250.185.206:443
 
@@ -459,10 +489,10 @@ FP2 can track the flow state correctly.
 // Main thread reads PCAP
 while (reader.readNextPacket(raw)) {
     Packet pkt = createPacket(raw);
-    
+
     // Hash to select Load Balancer
     size_t lb_idx = hash(pkt.tuple) % num_lbs;
-    
+
     // Push to LB's queue
     lbs_[lb_idx]->queue().push(pkt);
 }
@@ -475,10 +505,10 @@ void LoadBalancer::run() {
     while (running_) {
         // Pop from my input queue
         auto pkt = input_queue_.pop();
-        
+
         // Hash to select Fast Path
         size_t fp_idx = hash(pkt.tuple) % num_fps_;
-        
+
         // Push to FP's queue
         fps_[fp_idx]->queue().push(pkt);
     }
@@ -492,13 +522,13 @@ void FastPath::run() {
     while (running_) {
         // Pop from my input queue
         auto pkt = input_queue_.pop();
-        
+
         // Look up flow (each FP has its own flow table)
         Flow& flow = flows_[pkt.tuple];
-        
+
         // Classify (SNI extraction)
         classifyFlow(pkt, flow);
-        
+
         // Check rules
         if (rules_->isBlocked(pkt.tuple.src_ip, flow.app_type, flow.sni)) {
             stats_->dropped++;
@@ -516,7 +546,7 @@ void FastPath::run() {
 void outputThread() {
     while (running_ || output_queue_.size() > 0) {
         auto pkt = output_queue_.pop();
-        
+
         // Write to output file
         output_file.write(packet_header);
         output_file.write(pkt.data);
@@ -535,13 +565,13 @@ class TSQueue {
     std::mutex mutex_;
     std::condition_variable not_empty_;
     std::condition_variable not_full_;
-    
+
     void push(T item) {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push(item);
         not_empty_.notify_one();  // Wake up waiting consumer
     }
-    
+
     T pop() {
         std::unique_lock<std::mutex> lock(mutex_);
         not_empty_.wait(lock, [&]{ return !queue_.empty(); });
@@ -553,6 +583,7 @@ class TSQueue {
 ```
 
 **How it works:**
+
 - `push()`: Producer adds item, signals waiting consumers
 - `pop()`: Consumer waits until item available, then takes it
 - `mutex`: Only one thread can access at a time
@@ -567,6 +598,7 @@ class TSQueue {
 **Purpose:** Read network captures saved by Wireshark
 
 **Key structures:**
+
 ```cpp
 struct PcapGlobalHeader {
     uint32_t magic_number;   // 0xa1b2c3d4 identifies PCAP
@@ -585,6 +617,7 @@ struct PcapPacketHeader {
 ```
 
 **Key functions:**
+
 - `open(filename)`: Open PCAP, validate header
 - `readNextPacket(raw)`: Read next packet into buffer
 - `close()`: Clean up
@@ -594,6 +627,7 @@ struct PcapPacketHeader {
 **Purpose:** Extract protocol fields from raw bytes
 
 **Key function:**
+
 ```cpp
 bool PacketParser::parse(const RawPacket& raw, ParsedPacket& parsed) {
     parseEthernet(...);  // Extract MACs, EtherType
@@ -606,7 +640,8 @@ bool PacketParser::parse(const RawPacket& raw, ParsedPacket& parsed) {
 
 **Important concepts:**
 
-*Network Byte Order:* Network protocols use big-endian (most significant byte first). Your computer might use little-endian. We use `ntohs()` and `ntohl()` to convert:
+_Network Byte Order:_ Network protocols use big-endian (most significant byte first). Your computer might use little-endian. We use `ntohs()` and `ntohl()` to convert:
+
 ```cpp
 // ntohs = Network TO Host Short (16-bit)
 uint16_t port = ntohs(*(uint16_t*)(data + offset));
@@ -620,9 +655,10 @@ uint32_t seq = ntohl(*(uint32_t*)(data + offset));
 **Purpose:** Extract domain names from TLS and HTTP
 
 **For TLS (HTTPS):**
+
 ```cpp
 std::optional<std::string> SNIExtractor::extract(
-    const uint8_t* payload, 
+    const uint8_t* payload,
     size_t length
 ) {
     // 1. Verify TLS record header
@@ -634,6 +670,7 @@ std::optional<std::string> SNIExtractor::extract(
 ```
 
 **For HTTP:**
+
 ```cpp
 std::optional<std::string> HTTPHostExtractor::extract(
     const uint8_t* payload,
@@ -650,6 +687,7 @@ std::optional<std::string> HTTPHostExtractor::extract(
 **Purpose:** Define data structures used throughout
 
 **FiveTuple:**
+
 ```cpp
 struct FiveTuple {
     uint32_t src_ip;
@@ -657,12 +695,13 @@ struct FiveTuple {
     uint16_t src_port;
     uint16_t dst_port;
     uint8_t  protocol;
-    
+
     bool operator==(const FiveTuple& other) const;
 };
 ```
 
 **AppType:**
+
 ```cpp
 enum class AppType {
     UNKNOWN,
@@ -677,11 +716,12 @@ enum class AppType {
 ```
 
 **sniToAppType function:**
+
 ```cpp
 AppType sniToAppType(const std::string& sni) {
-    if (sni.find("youtube") != std::string::npos) 
+    if (sni.find("youtube") != std::string::npos)
         return AppType::YOUTUBE;
-    if (sni.find("facebook") != std::string::npos) 
+    if (sni.find("facebook") != std::string::npos)
         return AppType::FACEBOOK;
     // ... more patterns
 }
@@ -759,44 +799,44 @@ std::optional<std::string> SNIExtractor::extract(
     // Check TLS record header
     if (payload[0] != 0x16) return std::nullopt;  // Not handshake
     if (payload[5] != 0x01) return std::nullopt;  // Not Client Hello
-    
+
     size_t offset = 43;  // Skip to session ID
-    
+
     // Skip Session ID
     uint8_t session_len = payload[offset];
     offset += 1 + session_len;
-    
+
     // Skip Cipher Suites
     uint16_t cipher_len = readUint16BE(payload + offset);
     offset += 2 + cipher_len;
-    
+
     // Skip Compression Methods
     uint8_t comp_len = payload[offset];
     offset += 1 + comp_len;
-    
+
     // Read Extensions Length
     uint16_t ext_len = readUint16BE(payload + offset);
     offset += 2;
-    
+
     // Search for SNI extension
     size_t ext_end = offset + ext_len;
     while (offset + 4 <= ext_end) {
         uint16_t ext_type = readUint16BE(payload + offset);
         uint16_t ext_data_len = readUint16BE(payload + offset + 2);
         offset += 4;
-        
+
         if (ext_type == 0x0000) {  // SNI!
             // Parse SNI structure
             uint16_t sni_len = readUint16BE(payload + offset + 3);
             return std::string(
-                (char*)(payload + offset + 5), 
+                (char*)(payload + offset + 5),
                 sni_len
             );
         }
-        
+
         offset += ext_data_len;
     }
-    
+
     return std::nullopt;  // SNI not found
 }
 ```
@@ -807,11 +847,11 @@ std::optional<std::string> SNIExtractor::extract(
 
 ### Rule Types
 
-| Rule Type | Example | What it Blocks |
-|-----------|---------|----------------|
-| IP | `192.168.1.50` | All traffic from this source |
-| App | `YouTube` | All YouTube connections |
-| Domain | `tiktok` | Any SNI containing "tiktok" |
+| Rule Type | Example        | What it Blocks               |
+| --------- | -------------- | ---------------------------- |
+| IP        | `192.168.1.50` | All traffic from this source |
+| App       | `YouTube`      | All YouTube connections      |
+| Domain    | `tiktok`       | Any SNI containing "tiktok"  |
 
 ### The Blocking Flow
 
@@ -839,12 +879,12 @@ Packet arrives
 
 ### Flow-Based Blocking
 
-**Important:** We block at the *flow* level, not packet level.
+**Important:** We block at the _flow_ level, not packet level.
 
 ```
 Connection to YouTube:
   Packet 1 (SYN)           → No SNI yet, FORWARD
-  Packet 2 (SYN-ACK)       → No SNI yet, FORWARD  
+  Packet 2 (SYN-ACK)       → No SNI yet, FORWARD
   Packet 3 (ACK)           → No SNI yet, FORWARD
   Packet 4 (Client Hello)  → SNI: www.youtube.com
                            → App: YOUTUBE (blocked!)
@@ -856,6 +896,7 @@ Connection to YouTube:
 ```
 
 **Why this approach?**
+
 - We can't identify the app until we see the Client Hello
 - Once identified, we block all future packets of that flow
 - The connection will fail/timeout on the client
@@ -872,36 +913,36 @@ Connection to YouTube:
 
 ### Build Commands
 
-**Simple Version:**
+**CMake build (recommended):**
+
 ```bash
-g++ -std=c++17 -O2 -I include -o dpi_simple \
-    src/main_working.cpp \
-    src/pcap_reader.cpp \
-    src/packet_parser.cpp \
-    src/sni_extractor.cpp \
-    src/types.cpp
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
 ```
 
-**Multi-threaded Version:**
+The `dpi_engine` target is the modular multi-threaded engine. The `packet_analyzer` target remains available for inspecting individual packets.
+
+**Run tests and the scale benchmark:**
+
 ```bash
-g++ -std=c++17 -pthread -O2 -I include -o dpi_engine \
-    src/dpi_mt.cpp \
-    src/pcap_reader.cpp \
-    src/packet_parser.cpp \
-    src/sni_extractor.cpp \
-    src/types.cpp
+ctest --test-dir build --output-on-failure
+python3 tests/scale_integration.py build/dpi_engine
 ```
+
+The scale test processes 100,000 generated packets, checks that all six TLS SNI applications are classified, verifies the 15-worker configuration, checks that no forwarded packets are lost, exercises IP/app/domain blocking, and prints elapsed time and packets per second. The benchmark is informational and hardware-dependent; compare results only with the same build type and machine configuration.
 
 ### Running
 
 **Basic usage:**
+
 ```bash
-./dpi_engine test_dpi.pcap output.pcap
+./build/dpi_engine test_dpi.pcap output.pcap
 ```
 
 **With blocking:**
+
 ```bash
-./dpi_engine test_dpi.pcap output.pcap \
+./build/dpi_engine test_dpi.pcap output.pcap \
     --block-app YouTube \
     --block-app TikTok \
     --block-ip 192.168.1.50 \
@@ -909,8 +950,9 @@ g++ -std=c++17 -pthread -O2 -I include -o dpi_engine \
 ```
 
 **Configure threads (multi-threaded only):**
+
 ```bash
-./dpi_engine input.pcap output.pcap --lbs 4 --fps 4
+./build/dpi_engine input.pcap output.pcap --lbs 4 --fps 4
 # Creates 4 LB threads × 4 FP threads = 16 processing threads
 ```
 
@@ -979,16 +1021,16 @@ python3 generate_test_pcap.py
 
 ### What Each Section Means
 
-| Section | Meaning |
-|---------|---------|
-| Configuration | Number of threads created |
-| Rules | Which blocking rules are active |
-| Total Packets | Packets read from input file |
-| Forwarded | Packets written to output file |
-| Dropped | Packets blocked (not written) |
-| Thread Statistics | Work distribution across threads |
-| Application Breakdown | Traffic classification results |
-| Detected SNIs | Actual domain names found |
+| Section               | Meaning                          |
+| --------------------- | -------------------------------- |
+| Configuration         | Number of threads created        |
+| Rules                 | Which blocking rules are active  |
+| Total Packets         | Packets read from input file     |
+| Forwarded             | Packets written to output file   |
+| Dropped               | Packets blocked (not written)    |
+| Thread Statistics     | Work distribution across threads |
+| Application Breakdown | Traffic classification results   |
+| Detected SNIs         | Actual domain names found        |
 
 ---
 
@@ -997,6 +1039,7 @@ python3 generate_test_pcap.py
 ### Ideas for Improvement
 
 1. **Add More App Signatures**
+
    ```cpp
    // In types.cpp
    if (sni.find("twitch") != std::string::npos)
@@ -1004,6 +1047,7 @@ python3 generate_test_pcap.py
    ```
 
 2. **Add Bandwidth Throttling**
+
    ```cpp
    // Instead of DROP, delay packets
    if (shouldThrottle(flow)) {
@@ -1012,6 +1056,7 @@ python3 generate_test_pcap.py
    ```
 
 3. **Add Live Statistics Dashboard**
+
    ```cpp
    // Separate thread printing stats every second
    void statsThread() {
@@ -1029,6 +1074,47 @@ python3 generate_test_pcap.py
 5. **Add Persistent Rules**
    - Save rules to file
    - Load on startup
+
+---
+
+## 13. Render Keep-Alive (GitHub Actions)
+
+The FastAPI app exposes a lightweight `GET /health` endpoint that returns HTTP 200 with `{"status":"ok"}`. It does not access the database or run packet processing.
+
+The workflow at `.github/workflows/keep-alive.yml` sends a request from GitHub Actions every five minutes. The scheduler is external: **do not add a timer or background ping loop inside the Render app.** The workflow retries up to three times because a cold Render instance can take up to 60 seconds to respond. Its four-minute job timeout allows the retries and delays to finish.
+
+### Configure the URL Secret
+
+1. Push the health route and workflow to the GitHub repository.
+2. Open **Settings → Secrets and variables → Actions → New repository secret**.
+3. Set the name to `APP_URL` and the value to the real Render service base URL, for example `https://<service-name>.onrender.com`. Do not include `/health`; the workflow appends it. Do not put the URL in the workflow file.
+4. Deploy the updated FastAPI app to Render and wait for the deployment to finish.
+
+### Verify the Service
+
+Locally, start the web app from the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+python -m uvicorn web.main:app --host 127.0.0.1 --port 8000
+curl -i http://127.0.0.1:8000/health
+```
+
+The response should be HTTP 200 with `{"status":"ok"}`. After deploying, verify the public route using the real service URL:
+
+```bash
+curl -i https://<service-name>.onrender.com/health
+```
+
+To test the scheduled workflow immediately, open **Actions → Keep Render Awake → Run workflow**. A successful ping should complete with a green check. The workflow can only run in GitHub after it has been pushed and the `APP_URL` repository secret has been configured.
+
+### Free-Tier Limitations
+
+- GitHub scheduled workflows can run late or be skipped under load. A five-minute schedule should still fit Render's roughly 15-minute inactivity window, but it is not a hard real-time guarantee.
+- GitHub may disable scheduled workflows after 60 days of repository inactivity on public repositories. Re-enable the workflow or push a commit to resume it.
+- Render's free tier provides about 750 instance hours per month per workspace, enough for one always-on service but not several.
+- Render's free-tier policies can change; check the current Render documentation.
+- A paid Render instance does not sleep and is the better option for an important service.
 
 ---
 
