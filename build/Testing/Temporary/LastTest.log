@@ -1,17 +1,17 @@
-Start testing: Oct 11 14:18 India Standard Time
+Start testing: Oct 11 16:43 India Standard Time
 ----------------------------------------------------------
 1/2 Testing: dpi_unit_tests
 1/2 Test: dpi_unit_tests
 Command: "C:/Users/Veer Bajpai/Github projects/DPI Engine/build/Debug/dpi_unit_tests.exe"
 Directory: C:/Users/Veer Bajpai/Github projects/DPI Engine/build
-"dpi_unit_tests" start time: Oct 11 14:18 India Standard Time
+"dpi_unit_tests" start time: Oct 11 16:43 India Standard Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.09 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"dpi_unit_tests" end time: Oct 11 14:18 India Standard Time
+"dpi_unit_tests" end time: Oct 11 16:43 India Standard Time
 "dpi_unit_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -19,18 +19,18 @@ Test Passed.
 2/2 Test: dpi_scale_integration
 Command: "C:/Users/Veer Bajpai/AppData/Local/Programs/Python/Python312/python.exe" "C:/Users/Veer Bajpai/Github projects/DPI Engine/tests/scale_integration.py" "C:/Users/Veer Bajpai/Github projects/DPI Engine/build/Debug/dpi_engine.exe"
 Directory: C:/Users/Veer Bajpai/Github projects/DPI Engine/build
-"dpi_scale_integration" start time: Oct 11 14:18 India Standard Time
+"dpi_scale_integration" start time: Oct 11 16:43 India Standard Time
 Output:
 ----------------------------------------------------------
-Benchmark: packets=100000 elapsed_seconds=23.453870 packets_per_second=4263.7 fast_path_workers=15
+Benchmark: packets=100000 elapsed_seconds=8.881820 packets_per_second=11259.0 fast_path_workers=15
 Scale integration passed: 100000 packets, 6 classified apps, 15 fast-path workers
 Rule integration passed: source IP, app, and wildcard domain blocking
 <end of output>
-Test time =  24.31 sec
+Test time =   9.37 sec
 ----------------------------------------------------------
 Test Passed.
-"dpi_scale_integration" end time: Oct 11 14:18 India Standard Time
-"dpi_scale_integration" time elapsed: 00:00:24
+"dpi_scale_integration" end time: Oct 11 16:43 India Standard Time
+"dpi_scale_integration" time elapsed: 00:00:09
 ----------------------------------------------------------
 
-End testing: Oct 11 14:18 India Standard Time
+End testing: Oct 11 16:43 India Standard Time

@@ -142,12 +142,12 @@ TLS Client Hello:
 
 ### Primary Technology Stack
 
-| Layer                   | Technology      | Responsibility                                                                                                            |
-| ----------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| DPI engine (main stack) | C++17           | Read PCAPs, parse packets, track five-tuple flows, classify applications, apply blocking rules, and write filtered PCAPs. |
-| Build and tests         | CMake, CTest    | Build the C++ targets and run unit and scale-integration tests.                                                           |
-| Dashboard and API       | Python, FastAPI | Serve the capture UI, run the C++ engine, stream output, list flows, export PDF notes, and provide `/health`.             |
-| Keep-alive scheduler    | GitHub Actions  | Send an external health request every five minutes; the Render app does not run its own keep-alive timer.                 |
+| Layer                   | Technology             | Responsibility                                                                                                                                              |
+| ----------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DPI engine (main stack) | C++17                  | Read PCAPs, parse packets, track five-tuple flows, classify applications, apply blocking rules, and write filtered PCAPs.                                   |
+| Build and tests         | CMake, CTest           | Build the C++ targets and run unit and scale-integration tests.                                                                                             |
+| Dashboard and API       | Python, FastAPI, Scapy | Serve the capture UI, run the C++ engine, stream output, inspect the bundled IEEE 802.15.4/6LoWPAN RPL DIO sample, export PDF notes, and provide `/health`. |
+| Keep-alive scheduler    | GitHub Actions         | Send an external health request every five minutes; the Render app does not run its own keep-alive timer.                                                   |
 
 ### CMake Targets
 
@@ -157,6 +157,13 @@ TLS Client Hello:
 | `dpi_engine_core` | `src/dpi_engine.cpp` and supporting modules | Packet processing, load balancing, flow tracking, classification, and policy logic. |
 | `packet_analyzer` | `src/main.cpp`                              | Standalone packet inspection utility.                                               |
 | Web dashboard     | `web/main.py`                               | Supporting FastAPI interface for local capture analysis and reports.                |
+
+### Supported Capture Paths
+
+- **Ethernet / IPv4 / TCP or UDP:** processed by the C++ DPI engine for five-tuple flow tracking, application classification, policy outcomes, and filtered PCAP output.
+- **IEEE 802.15.4-2015 / 6LoWPAN / ICMPv6 RPL DIO sample layout:** decoded by the FastAPI-side Scapy dissector. The current support targets the bundled extended-address, source-PAN-ID-elided IPHC layout; it reports source/destination IPv6 addresses, RPL instance/version/rank/DODAG ID, and DIO options. It does not run through the C++ TCP/UDP policy engine or produce a filtered-output PCAP.
+
+The bundled RPL fixture, `tests/fixtures/rpl-dio-mc-nsa-optional-tlv-dissector-sample.pcap`, is from [briliant-ben/SampleCaptures](https://github.com/briliant-ben/SampleCaptures/tree/main/general-unsorted). Use **Run RPL demo** in the dashboard or upload the fixture. The sample intentionally includes a truncated optional TLV, which is reported rather than read past the packet boundary.
 
 ---
 

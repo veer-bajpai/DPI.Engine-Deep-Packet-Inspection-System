@@ -2,7 +2,7 @@
 # If you choose not to use CMake, this file may be hand configured, by
 # filling in the required variables.
 
-cmake_minimum_required(VERSION 4.3.1-msvc1)
+cmake_minimum_required(VERSION 4.4.4)
 
 # CTest Start Step
 set(CTEST_SOURCE_DIRECTORY "C:/Users/Veer Bajpai/Github projects/DPI Engine")
@@ -48,6 +48,7 @@ set(CTEST_USE_LAUNCHERS "0")
 set(CTEST_RESOURCE_SPEC_FILE "")
 set(CTEST_TEST_LOAD "")
 set(CTEST_TEST_TIMEOUT "1500")
+set(CTEST_TEST_COVERAGE_TOOL "")
 
 # CTest Coverage Step
 set(CTEST_COVERAGE_COMMAND "C:/MinGW/bin/gcov.exe")

@@ -340,6 +340,13 @@
         color: #e7f0e8;
         background: var(--forest);
       }
+      .route-strip.rpl-mode {
+        grid-template-columns: 1fr 1fr;
+      }
+      .route-output[hidden],
+      .policy-branches[hidden] {
+        display: none;
+      }
       .route-strip::after {
         position: absolute;
         inset: 0;
@@ -1770,14 +1777,19 @@
               <span class="route-node" aria-hidden="true"></span>
               <span class="route-text"
                 ><small>01 / Ingress</small><strong>Capture input</strong
-                ><span>PCAP / Ethernet</span></span
+                ><span id="route-ingress-type"
+                  >PCAP / Ethernet or 802.15.4</span
+                ></span
               >
             </div>
             <div class="route-step core">
               <span class="route-node" aria-hidden="true"></span>
               <span class="route-text"
-                ><small>02 / Inspect</small><strong>DPI core</strong
-                ><span>Parse / classify / match</span></span
+                ><small>02 / Inspect</small
+                ><strong id="route-core-title">DPI core</strong
+                ><span id="route-core-detail"
+                  >Parse / classify / match</span
+                ></span
               >
             </div>
             <div class="route-output" aria-label="Policy outcomes">
@@ -1811,7 +1823,9 @@
             <div class="metric">
               <span class="metric-label">Trace rate</span
               ><strong class="metric-value" id="metric-rate">--</strong
-              ><span class="metric-note">Packets per second</span>
+              ><span class="metric-note" id="metric-rate-note"
+                >Packets per second</span
+              >
             </div>
             <div class="metric">
               <span class="metric-label">Worker pool</span
@@ -1866,6 +1880,7 @@
                   <option value="ALL">All outcomes</option>
                   <option value="FORWARD">Forwarded</option>
                   <option value="DROP">Dropped</option>
+                  <option value="OBSERVED">Observed</option>
                 </select>
               </div>
               <div
@@ -1934,7 +1949,8 @@
                 >Packet trace monitor
               </div>
               <div class="worker-pool">
-                WORKERS <strong id="live-workers">04 / READY</strong>
+                <span id="worker-label">WORKERS</span>
+                <strong id="live-workers">04 / READY</strong>
               </div>
             </div>
             <div class="trace-heading">
@@ -1948,7 +1964,7 @@
               </div>
               <div class="trace-rate">
                 <strong id="trace-rate-value">0</strong
-                ><small>packets / sec</small>
+                ><small id="trace-rate-unit">packets / sec</small>
               </div>
             </div>
             <div
@@ -1964,8 +1980,13 @@
             </div>
             <div class="live-console-meta">
               <span>ELAPSED <strong id="run-elapsed">00:00.0</strong></span
-              ><span>THREAD MODEL <strong>2 LB × 2 FP</strong></span
-              ><span>HASH <strong>5-TUPLE</strong></span>
+              ><span
+                ><span id="thread-model-label">THREAD MODEL</span>
+                <strong id="thread-model-value">2 LB × 2 FP</strong></span
+              ><span
+                ><span id="hash-label">HASH</span>
+                <strong id="hash-value">5-TUPLE</strong></span
+              >
             </div>
             <div
               class="activity-log"
@@ -2058,7 +2079,7 @@ Waiting for a capture run...</pre
                   </div>
                   <div class="capture-actions">
                     <span class="action-help"
-                      >PCAP CLASSIC / LINKTYPE ETHERNET</span
+                      >PCAP / ETHERNET DPI OR 802.15.4 RPL INSPECTION</span
                     >
                     <div class="action-buttons">
                       <button
@@ -2075,6 +2096,13 @@ Waiting for a capture run...</pre
                           />
                         </svg>
                         Run sample
+                      </button>
+                      <button
+                        class="button button-secondary"
+                        id="rpl-sample-button"
+                        type="button"
+                      >
+                        Run RPL
                       </button>
                       <button
                         class="button button-primary"
@@ -2269,6 +2297,7 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
       const dropZone = document.getElementById("drop-zone");
       const analyzeButton = document.getElementById("analyze-button");
       const sampleButton = document.getElementById("sample-button");
+      const rplSampleButton = document.getElementById("rpl-sample-button");
       const reportOutput = document.getElementById("report-output");
       const reportTitle = document.getElementById("report-title");
       const reportLed = document.getElementById("report-led");
@@ -2282,6 +2311,7 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
       const runReference = document.getElementById("run-reference");
       const traceCount = document.getElementById("trace-count");
       const traceRate = document.getElementById("trace-rate-value");
+      const traceLabel = document.querySelector(".trace-label");
       const traceProgress = document.getElementById("trace-progress");
       const traceTrack = document.getElementById("trace-track");
       const activityLog = document.getElementById("activity-log");
@@ -2301,11 +2331,42 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
       const flowPrevious = document.getElementById("flow-previous");
       const flowNext = document.getElementById("flow-next");
       const flowPageSize = 25;
+      const pipelinePanelIndex = document.querySelector(
+        "#inspection-path .panel-index",
+      );
+      const pipelineFoot = document.querySelectorAll(
+        "#inspection-path .pipeline-foot span",
+      );
+      const routeStrip = document.querySelector(".route-strip");
+      const routeIngressType = document.getElementById("route-ingress-type");
+      const routeCoreTitle = document.getElementById("route-core-title");
+      const routeCoreDetail = document.getElementById("route-core-detail");
+      const routeOutput = document.querySelector(".route-output");
+      const workerLabel = document.getElementById("worker-label");
+      const threadModelLabel = document.getElementById("thread-model-label");
+      const threadModelValue = document.getElementById("thread-model-value");
+      const hashLabel = document.getElementById("hash-label");
+      const hashValue = document.getElementById("hash-value");
+      const traceRateUnit = document.getElementById("trace-rate-unit");
+      const metricRateNote = document.getElementById("metric-rate-note");
+      const ethernetStageLabels = [
+        ["Decode packet", "Ethernet / IPv4 / TCP + UDP"],
+        ["Track five-tuple", "Consistent flow assignment"],
+        ["Classify application", "TLS SNI / HTTP Host / DNS"],
+        ["Evaluate policy", "IP / application / domain"],
+      ];
+      const rplStageLabels = [
+        ["Decode 802.15.4", "2015 MAC / extended address"],
+        ["Expand 6LoWPAN", "IPHC / IPv6 / ICMPv6"],
+        ["Inspect RPL DIO", "Instance / rank / DODAG ID"],
+        ["Read DIO options", "Metric / DODAG / optional TLVs"],
+      ];
       let flowRecords = [];
       let flowPage = 0;
       let selectedFile = null;
       let latestReport = "";
       let currentCaptureName = "Capture";
+      let selectedCaptureProtocol = "ETHERNET";
       let runStartedAt = 0;
       let elapsedTimer = null;
       let selectedPacketTotal = 0;
@@ -2315,6 +2376,53 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
         return bytes < 1024 * 1024
           ? `${Math.max(1, Math.round(bytes / 1024))} KB`
           : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      }
+
+      function setCaptureProtocol(protocol) {
+        const isRpl = protocol === "RPL";
+        const labels = isRpl ? rplStageLabels : ethernetStageLabels;
+        document
+          .querySelectorAll("#inspection-path .stage")
+          .forEach((stage, index) => {
+            stage.querySelector(".stage-copy strong").textContent =
+              labels[index][0];
+            stage.querySelector(".stage-copy span").textContent =
+              labels[index][1];
+          });
+        document.querySelector("#inspection-path .policy-branches").hidden =
+          isRpl;
+        routeOutput.hidden = isRpl;
+        routeStrip.classList.toggle("rpl-mode", isRpl);
+        routeIngressType.textContent = isRpl
+          ? "PCAP / IEEE 802.15.4"
+          : "PCAP / Ethernet";
+        routeCoreTitle.textContent = isRpl ? "6LoWPAN decoder" : "DPI core";
+        routeCoreDetail.textContent = isRpl
+          ? "Expand / decode / inspect RPL"
+          : "Parse / classify / match";
+        workerLabel.textContent = isRpl ? "DECODER" : "WORKERS";
+        threadModelLabel.textContent = isRpl ? "DISSECTOR" : "THREAD MODEL";
+        threadModelValue.textContent = isRpl
+          ? "Scapy / 6LoWPAN"
+          : "2 LB × 2 FP";
+        hashLabel.textContent = isRpl ? "LAYER" : "HASH";
+        hashValue.textContent = isRpl ? "IEEE 802.15.4" : "5-TUPLE";
+        traceRateUnit.textContent = isRpl ? "messages / sec" : "packets / sec";
+        metricRateNote.textContent = isRpl
+          ? "RPL messages / sec"
+          : "Packets per second";
+        traceLabel.textContent = isRpl
+          ? "Completed RPL DIO messages / inspectable capture frames"
+          : "Completed fast-path packets / inspectable PCAP packets";
+        pipelinePanelIndex.textContent = isRpl
+          ? "RADIO / RPL"
+          : "ENGINE / FLOW";
+        pipelineFoot[0].textContent = isRpl
+          ? "LINK / IEEE 802.15.4"
+          : "FLOW HASH / 5-TUPLE";
+        pipelineFoot[1].textContent = isRpl
+          ? "DECODE / ICMPv6 DIO"
+          : "WORKERS / CONFIGURABLE";
       }
 
       function isInspectablePacket(packet) {
@@ -2340,6 +2448,18 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
         return protocol === 17 && packet.length >= transportOffset + 8;
       }
 
+      function isRplDioFrame(packet) {
+        return (
+          packet.length >= 27 &&
+          packet[0] === 0x21 &&
+          packet[1] === 0xec &&
+          packet[21] === 0x7a &&
+          packet[23] === 0x3a &&
+          packet[25] === 0x9b &&
+          packet[26] === 0x01
+        );
+      }
+
       async function countInspectablePackets(file) {
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (bytes.length < 24)
@@ -2361,6 +2481,7 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
           bytes.byteOffset,
           bytes.byteLength,
         );
+        const linkType = view.getUint32(20, littleEndian) & 0xffff;
         const snapLength = view.getUint32(16, littleEndian);
         let offset = 24;
         let count = 0;
@@ -2374,11 +2495,18 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
           const packetEnd = packetStart + includedLength;
           if (packetEnd > bytes.length)
             throw new Error("Capture has a truncated packet payload.");
-          if (isInspectablePacket(bytes.subarray(packetStart, packetEnd)))
+          const packet = bytes.subarray(packetStart, packetEnd);
+          if (
+            (linkType === 1 && isInspectablePacket(packet)) ||
+            (linkType === 195 && isRplDioFrame(packet))
+          )
             count++;
           offset = packetEnd;
         }
-        return count;
+        return {
+          count,
+          protocol: linkType === 195 ? "RPL" : "ETHERNET",
+        };
       }
 
       async function selectFile(file) {
@@ -2402,19 +2530,31 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
           "Reading PCAP records and counting supported IPv4 TCP/UDP packets...",
         );
         try {
-          const total = await countInspectablePackets(file);
+          const result = await countInspectablePackets(file);
           if (selectedFile !== file) return;
-          if (total === 0)
-            throw new Error("Capture has no supported IPv4 TCP/UDP packets.");
-          selectedPacketTotal = total;
+          if (result.count === 0) {
+            throw new Error(
+              result.protocol === "RPL"
+                ? "Capture has no supported 802.15.4 6LoWPAN RPL DIO frames."
+                : "Capture has no supported Ethernet IPv4 TCP/UDP packets.",
+            );
+          }
+          selectedCaptureProtocol = result.protocol;
+          setCaptureProtocol(result.protocol);
+          selectedPacketTotal = result.count;
           analyzeButton.disabled = false;
-          runReference.textContent = `${total.toLocaleString()} INSPECTABLE PACKETS / READY`;
+          runReference.textContent =
+            result.protocol === "RPL"
+              ? `${result.count.toLocaleString()} RPL DIO FRAMES / READY`
+              : `${result.count.toLocaleString()} INSPECTABLE PACKETS / READY`;
           setActivity(
-            `${total.toLocaleString()} eligible IPv4 TCP/UDP packets found in capture.`,
+            result.protocol === "RPL"
+              ? `${result.count.toLocaleString()} IEEE 802.15.4 RPL DIO frames found in capture.`
+              : `${result.count.toLocaleString()} eligible IPv4 TCP/UDP packets found in capture.`,
             "ready",
           );
-          renderTrace(0, total, 0);
-          traceTrack.setAttribute("aria-valuemax", String(total));
+          renderTrace(0, result.count, 0);
+          traceTrack.setAttribute("aria-valuemax", String(result.count));
         } catch (error) {
           selectedFile = null;
           showError(
@@ -2428,6 +2568,7 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
       function setRunning(isRunning, label = "") {
         analyzeButton.disabled = isRunning || !selectedFile;
         sampleButton.disabled = isRunning;
+        rplSampleButton.disabled = isRunning;
         if (!isRunning) {
           if (elapsedTimer) window.clearInterval(elapsedTimer);
           elapsedTimer = null;
@@ -2435,6 +2576,7 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
         }
 
         terminalWindow.hidden = false;
+        setCaptureProtocol(selectedCaptureProtocol);
         downloadPdfButton.disabled = true;
         terminalState.textContent = "CONNECTING";
         terminalLines = [];
@@ -2446,14 +2588,25 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
         runStartedAt = 0;
         livePacketTotal = selectedPacketTotal;
         liveBadge.textContent = "CONNECTING";
-        liveWorkers.textContent = "04 / STARTING";
+        liveWorkers.textContent =
+          selectedCaptureProtocol === "RPL"
+            ? "RPL / STARTING"
+            : "04 / STARTING";
         elapsedLabel.textContent = "00:00.0";
         renderTrace(0, livePacketTotal, 0);
         document.getElementById("metric-packets").textContent = "0";
         document.getElementById("metric-packets-note").textContent =
-          livePacketTotal
-            ? `of ${livePacketTotal.toLocaleString()} inspectable packets`
-            : "Waiting for capture header";
+          selectedCaptureProtocol === "RPL"
+            ? "Waiting for RPL DIO decode"
+            : livePacketTotal
+              ? `of ${livePacketTotal.toLocaleString()} inspectable packets`
+              : "Waiting for capture header";
+        document.getElementById("metric-workers").textContent =
+          selectedCaptureProtocol === "RPL" ? "RPL" : "4";
+        document.getElementById("metric-workers-note").textContent =
+          selectedCaptureProtocol === "RPL"
+            ? "6LoWPAN dissector"
+            : "2 LB / 2 FP";
         document.getElementById("metric-rate").textContent = "0";
         document.getElementById("metric-classified").textContent = "--";
         document.getElementById("metric-forwarded").textContent = "--";
@@ -2464,13 +2617,20 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
         });
         reportLed.className = "report-led running";
         reportTitle.textContent = "Engine report / connecting";
-        reportState.textContent = "STARTING WORKER POOL";
+        reportState.textContent =
+          selectedCaptureProtocol === "RPL"
+            ? "STARTING RPL DECODER"
+            : "STARTING WORKER POOL";
         reportOutput.classList.remove("empty", "error");
-        reportOutput.textContent = `${label}\nWaiting for DPI process telemetry...`;
+        reportOutput.textContent = `${label}\n${selectedCaptureProtocol === "RPL" ? "Waiting for RPL decoder output..." : "Waiting for DPI process telemetry..."}`;
         document.getElementById("report-meta-right").textContent =
-          "OPENING LOCAL WORKER POOL";
+          selectedCaptureProtocol === "RPL"
+            ? "OPENING 802.15.4 / 6LoWPAN DECODER"
+            : "OPENING LOCAL WORKER POOL";
         setActivity(
-          "Opening the local DPI process; no packet counters reported yet.",
+          selectedCaptureProtocol === "RPL"
+            ? "Opening the IEEE 802.15.4 / 6LoWPAN RPL decoder."
+            : "Opening the local DPI process; no packet counters reported yet.",
           "running",
         );
       }
@@ -2670,6 +2830,36 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
 
       function updateMetrics(report) {
         latestReport = report;
+        const rplMessages = report.match(/RPL DIO Messages:\s*(\d+)/i);
+        if (rplMessages) {
+          const packets =
+            Number(report.match(/Total Packets:\s*(\d+)/i)?.[1]) || 0;
+          document.getElementById("metric-packets").textContent =
+            String(packets);
+          document.getElementById("metric-packets-note").textContent =
+            "802.15.4 RPL DIO frames inspected";
+          document.getElementById("metric-classified").textContent =
+            rplMessages[1];
+          document.getElementById("metric-forwarded").textContent = "N/A";
+          document.getElementById("metric-dropped").textContent = "N/A";
+          document.getElementById("metric-rate").textContent = "N/A";
+          metricRateNote.textContent = "Specialized RPL decoder";
+          document.getElementById("metric-workers").textContent = "RPL";
+          document.getElementById("metric-workers-note").textContent =
+            "6LoWPAN dissector";
+          liveWorkers.textContent = "RPL / COMPLETE";
+          renderTrace(packets, packets, 0);
+          document.getElementById("metric-packets-note").textContent =
+            "802.15.4 RPL DIO frames inspected";
+          document.getElementById("metric-rate").textContent = "N/A";
+          document.getElementById("trace-rate-value").textContent = "N/A";
+          document.getElementById("metric-forwarded").textContent = "N/A";
+          document.getElementById("metric-dropped").textContent = "N/A";
+          document.getElementById("report-meta-right").textContent =
+            "IEEE 802.15.4 / 6LoWPAN / RPL";
+          runReference.textContent = `${packets} RPL DIO FRAMES / COMPLETED`;
+          return;
+        }
         const packets =
           readMetric(/Total Packets\s*:\s*([\d,]+)/i) ||
           readMetric(/packets=(\d+)/i) ||
@@ -2709,20 +2899,27 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
 
       function handleEngineEvent(event) {
         if (event.type === "start") {
+          const isRpl = event.protocol === "RPL";
           terminalState.textContent = "RUNNING";
           livePacketTotal = event.total_packets || selectedPacketTotal;
           liveBadge.textContent = "LIVE TRACE";
-          liveWorkers.textContent = `${String(event.workers || 4).padStart(2, "0")} / ONLINE`;
-          document.getElementById("metric-workers").textContent =
-            event.workers || 4;
-          document.getElementById("metric-workers-note").textContent =
-            "Fast-path threads";
+          liveWorkers.textContent = isRpl
+            ? "RPL / DECODING"
+            : `${String(event.workers || 4).padStart(2, "0")} / ONLINE`;
+          document.getElementById("metric-workers").textContent = isRpl
+            ? "RPL"
+            : event.workers || 4;
+          document.getElementById("metric-workers-note").textContent = isRpl
+            ? "6LoWPAN dissector"
+            : "Fast-path threads";
           runStartedAt = performance.now();
           elapsedTimer = window.setInterval(updateElapsed, 100);
           renderTrace(0, livePacketTotal, 0);
           reportState.textContent = "INSPECTION RUNNING";
           setActivity(
-            `DPI process started with ${event.workers || 4} fast-path workers; ${livePacketTotal.toLocaleString()} packets queued for inspection.`,
+            isRpl
+              ? `${livePacketTotal.toLocaleString()} RPL DIO messages queued for 6LoWPAN decoding.`
+              : `DPI process started with ${event.workers || 4} fast-path workers; ${livePacketTotal.toLocaleString()} packets queued for inspection.`,
           );
         } else if (event.type === "log") {
           appendTerminalLine(event.line || "");
@@ -2823,9 +3020,14 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
           );
       }
 
-      async function postForReport(url, options, label) {
+      async function postForReport(url, options, label, protocol = "ETHERNET") {
         currentCaptureName = label;
-        setRunning(true, `Opening local DPI worker pool...\n${label}`);
+        selectedCaptureProtocol = protocol;
+        setCaptureProtocol(protocol);
+        setRunning(
+          true,
+          `${protocol === "RPL" ? "Opening RPL capture decoder..." : "Opening local DPI worker pool..."}\n${label}`,
+        );
         document.getElementById("report-meta-right").textContent =
           "WAITING FOR ENGINE TELEMETRY";
         try {
@@ -2861,6 +3063,7 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
           "/analyze-stream",
           { method: "POST", body: form },
           selectedFile.name,
+          selectedCaptureProtocol,
         );
       });
       sampleButton.addEventListener("click", () =>
@@ -2868,6 +3071,14 @@ Awaiting a capture. Run the bundled sample or inspect a local PCAP to populate t
           "/analyze-sample-stream",
           { method: "POST" },
           "Bundled sample capture",
+        ),
+      );
+      rplSampleButton.addEventListener("click", () =>
+        postForReport(
+          "/analyze-rpl-sample-stream",
+          { method: "POST" },
+          "RPL DIO sample capture",
+          "RPL",
         ),
       );
       flowSearch.addEventListener("input", () => {

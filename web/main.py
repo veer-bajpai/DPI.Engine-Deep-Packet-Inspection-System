@@ -7,6 +7,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
+from ipaddress import IPv6Address
 from io import BytesIO
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -25,12 +26,14 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 MAX_SIZE_MB = 5
 DPI_WORKER_COUNT = 4
 PROGRESS_PATTERN = re.compile(r"DPI_PROGRESS completed=(\d+)")
+DLT_EN10MB = 1
+DLT_IEEE802_15_4_NOFCS = 195
 
 
 class FlowNote(BaseModel):
     source: str = Field(min_length=1, max_length=128)
     destination: str = Field(min_length=1, max_length=128)
-    protocol: str = Field(min_length=1, max_length=8)
+    protocol: str = Field(min_length=1, max_length=16)
     application: str = Field(min_length=1, max_length=64)
     domain: str = Field(default="", max_length=253)
     action: str = Field(min_length=1, max_length=10)
@@ -54,7 +57,7 @@ def home():
     return Path("web/static/index.html").read_text(encoding="utf-8")
 
 
-def count_inspectable_packets(capture):
+def pcap_records(capture):
     if len(capture) < 24:
         raise ValueError("Capture is shorter than a PCAP global header.")
 
@@ -66,8 +69,8 @@ def count_inspectable_packets(capture):
         raise ValueError("Not a supported classic PCAP file.")
 
     snaplen = struct.unpack_from(byte_order + "I", capture, 16)[0]
+    link_type = struct.unpack_from(byte_order + "I", capture, 20)[0] & 0xFFFF
     offset = 24
-    count = 0
     while offset < len(capture):
         if len(capture) - offset < 16:
             raise ValueError("Capture contains a truncated packet header.")
@@ -79,8 +82,151 @@ def count_inspectable_packets(capture):
         packet_end = packet_start + included_length
         if packet_end > len(capture):
             raise ValueError("Capture contains a truncated packet payload.")
-        packet = capture[packet_start:packet_end]
+        yield link_type, capture[packet_start:packet_end]
+        offset = packet_end
 
+
+def pcap_link_type(capture):
+    if len(capture) < 24:
+        raise ValueError("Capture is shorter than a PCAP global header.")
+    if capture[:4] == b"\xd4\xc3\xb2\xa1":
+        byte_order = "<"
+    elif capture[:4] == b"\xa1\xb2\xc3\xd4":
+        byte_order = ">"
+    else:
+        raise ValueError("Not a supported classic PCAP file.")
+    return struct.unpack_from(byte_order + "I", capture, 20)[0] & 0xFFFF
+
+
+def decode_rpl_dio_frame(frame):
+    if len(frame) < 53:
+        return None
+
+    frame_control = int.from_bytes(frame[:2], "little")
+    frame_type = frame_control & 0x7
+    frame_version = (frame_control >> 12) & 0x3
+    destination_mode = (frame_control >> 10) & 0x3
+    source_mode = (frame_control >> 14) & 0x3
+    sequence_suppressed = bool(frame_control & 0x0100)
+    pan_id_compressed = bool(frame_control & 0x0040)
+    if (
+        (frame_type, frame_version, destination_mode, source_mode) != (1, 2, 3, 3)
+        or sequence_suppressed
+        or pan_id_compressed
+    ):
+        return None
+
+    iphc_dispatch = frame[21]
+    iphc_flags = frame[22]
+    supported_iphc = (
+        iphc_dispatch & 0xE0 == 0x60
+        and (iphc_dispatch >> 3) & 0x3 == 0x3
+        and (iphc_dispatch >> 2) & 0x1 == 0
+        and iphc_dispatch & 0x3 == 0x2
+        and (iphc_flags >> 7) & 0x1 == 0
+        and (iphc_flags >> 6) & 0x1 == 0
+        and (iphc_flags >> 4) & 0x3 == 0x3
+        and (iphc_flags >> 3) & 0x1 == 1
+        and (iphc_flags >> 2) & 0x1 == 0
+        and iphc_flags & 0x3 == 0x3
+    )
+    if not supported_iphc or frame[23] != 58:
+        return None
+    if frame[25] != 155 or frame[26] != 1:
+        return None
+
+    source_eui64 = frame[13:21]
+    source_iid = int.from_bytes(source_eui64, "little") ^ (0x02 << 56)
+    source_address = str(IPv6Address((0xFE80 << 112) | source_iid))
+    destination_address = str(IPv6Address((0xFF02 << 112) | frame[24]))
+    body = frame[29:]
+    if len(body) < 24:
+        return None
+
+    dodag_id = str(IPv6Address(body[8:24]))
+    options = []
+    truncated_options = 0
+    offset = 24
+    option_names = {
+        0: "Pad1",
+        1: "PadN",
+        2: "Metric Container",
+        3: "Route Information",
+        4: "DODAG Configuration",
+        5: "RPL Target",
+        6: "Transit Information",
+        7: "Solicited Information",
+        8: "Prefix Information",
+        9: "RPL Target Descriptor",
+    }
+    while offset < len(body):
+        option_type = body[offset]
+        if option_type == 0:
+            options.append({"name": option_names[0], "length": 0, "truncated": False})
+            offset += 1
+            continue
+        if offset + 2 > len(body):
+            truncated_options += 1
+            options.append({"name": option_names.get(option_type, f"Option {option_type}"), "length": None, "truncated": True})
+            break
+        option_length = body[offset + 1]
+        option_end = offset + 2 + option_length
+        truncated = option_end > len(body)
+        options.append({
+            "name": option_names.get(option_type, f"Option {option_type}"),
+            "length": option_length,
+            "truncated": truncated,
+        })
+        if truncated:
+            truncated_options += 1
+            break
+        offset = option_end
+
+    dio_flags = body[4]
+    return {
+        "source": source_address,
+        "destination": destination_address,
+        "protocol": "ICMPv6/RPL",
+        "application": "RPL DIO",
+        "domain": f"Instance {body[0]} / Rank {int.from_bytes(body[2:4], 'big')} / DODAG {dodag_id}",
+        "action": "OBSERVED",
+        "packets": 1,
+        "bytes": len(frame),
+        "instance": body[0],
+        "version": body[1],
+        "rank": int.from_bytes(body[2:4], "big"),
+        "grounded": bool(dio_flags & 0x80),
+        "mode_of_operation": (dio_flags >> 3) & 0x7,
+        "preference": dio_flags & 0x7,
+        "dtsn": body[5],
+        "dodag_id": dodag_id,
+        "options": options,
+        "truncated_options": truncated_options,
+    }
+
+
+def inspect_rpl_capture(capture):
+    return [
+        flow
+        for link_type, packet in pcap_records(capture)
+        if link_type == DLT_IEEE802_15_4_NOFCS
+        for flow in [decode_rpl_dio_frame(packet)]
+        if flow is not None
+    ]
+
+
+def count_inspectable_packets(capture):
+    records = list(pcap_records(capture))
+    if not records:
+        return 0
+    link_type = records[0][0]
+    if link_type == DLT_IEEE802_15_4_NOFCS:
+        return sum(decode_rpl_dio_frame(packet) is not None for _, packet in records)
+    if link_type != DLT_EN10MB:
+        return 0
+
+    count = 0
+    for _, packet in records:
         if len(packet) >= 34 and packet[12:14] == b"\x08\x00":
             ip_start = 14
             ip_header_length = (packet[ip_start] & 0x0F) * 4
@@ -92,10 +238,50 @@ def count_inspectable_packets(capture):
                         count += 1
                 elif packet[23] == 17 and len(packet) >= transport_start + 8:
                     count += 1
-
-        offset = packet_end
-
     return count
+
+
+def analyze_rpl_capture(capture):
+    flows = inspect_rpl_capture(capture)
+    if not flows:
+        raise ValueError("No supported 6LoWPAN-compressed IPv6 RPL DIO frames were found.")
+
+    report_lines = [
+        "IEEE 802.15.4 / 6LoWPAN RPL INSPECTION REPORT",
+        f"Total Packets: {len(flows)}",
+        f"RPL DIO Messages: {len(flows)}",
+        f"Truncated RPL Options: {sum(flow['truncated_options'] for flow in flows)}",
+        "",
+    ]
+    events = [{"type": "start", "protocol": "RPL", "total_packets": len(flows), "workers": 0}]
+    for index, flow in enumerate(flows, 1):
+        options = ", ".join(
+            option["name"] + (" (truncated)" if option["truncated"] else "")
+            for option in flow["options"]
+        ) or "None"
+        report_lines.extend([
+            f"DIO {index}: {flow['source']} -> {flow['destination']}",
+            f"  Instance: {flow['instance']}  Version: {flow['version']}  Rank: {flow['rank']}",
+            f"  DODAG ID: {flow['dodag_id']}  DTSN: {flow['dtsn']}",
+            f"  Options: {options}",
+        ])
+        events.append({"type": "flow", "flow": flow})
+        events.append({
+            "type": "progress",
+            "completed_packets": index,
+            "total_packets": len(flows),
+            "elapsed_seconds": 0,
+            "packets_per_second": 0,
+        })
+    events.append({
+        "type": "complete",
+        "protocol": "RPL",
+        "report": "\n".join(report_lines),
+        "packets": len(flows),
+        "workers": 0,
+        "flow_count": len(flows),
+    })
+    return events
 
 
 def sse_event(payload):
@@ -109,6 +295,12 @@ def stream_engine(input_path, output_path, total_packets, cleanup_input):
         flow_records = []
         started_at = time.perf_counter()
         try:
+            capture = input_path.read_bytes()
+            if pcap_link_type(capture) == DLT_IEEE802_15_4_NOFCS:
+                for event in analyze_rpl_capture(capture):
+                    yield sse_event(event)
+                return
+
             engine_candidates = (
                 Path("./dpi_engine.exe"),
                 Path("./build/Debug/dpi_engine.exe"),
@@ -249,6 +441,24 @@ async def analyze_sample_stream():
         raise HTTPException(400, str(error)) from error
 
     output_path = UPLOAD_DIR / f"{uuid.uuid4()}_sample_out.pcap"
+    return stream_engine(input_path, output_path, total_packets, cleanup_input=False)
+
+
+@app.post("/analyze-rpl-sample-stream")
+async def analyze_rpl_sample_stream():
+    input_path = Path(
+        "tests/fixtures/rpl-dio-mc-nsa-optional-tlv-dissector-sample.pcap"
+    ).resolve()
+    if not input_path.is_file():
+        raise HTTPException(404, "Bundled RPL sample capture is missing.")
+    try:
+        total_packets = count_inspectable_packets(input_path.read_bytes())
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    if total_packets == 0:
+        raise HTTPException(400, "Bundled capture contains no supported RPL DIO frames.")
+
+    output_path = UPLOAD_DIR / f"{uuid.uuid4()}_rpl_sample_out.pcap"
     return stream_engine(input_path, output_path, total_packets, cleanup_input=False)
 
 
